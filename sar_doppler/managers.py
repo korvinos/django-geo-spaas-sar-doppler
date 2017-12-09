@@ -30,6 +30,12 @@ class DatasetManager(DM):
 
     NUM_SUBSWATS = 5
     NUM_BORDER_POINTS = 10
+    WKV_NAME = {
+        'dc_anomaly': 'anomaly_of_surface_backwards_doppler_centroid_frequency_shift_of_radar_wave',
+        'dc_wind': 'surface_backwards_doppler_frequency_shift_of_radar_wave_due_to_wind_waves',
+        'radial_velocity': 'surface_radial_doppler_sea_water_velocity',
+        'dc_velocity': 'surface_backwards_doppler_frequency_shift_of_radar_wave_due_to_surface_velocity'
+    }
 
     def list_of_coordinates(self, left, right, upper, lower, axis):
         coord_list = np.concatenate(
@@ -187,30 +193,23 @@ class DatasetManager(DM):
                 continue
 
             # Add Doppler anomaly
-            swath_data[i].add_band(array=swath_data[i].anomaly(), parameters={
-                'wkv':
-                'anomaly_of_surface_backwards_doppler_centroid_frequency_shift_of_radar_wave'
-            })
+            swath_data[i].add_band(array=swath_data[i].anomaly(),
+                                   parameters={'wkv': self.WKV_NAME['dc_anomaly']})
 
             # Find matching NCEP forecast wind field
             wind = self.find_wind(swath_data[i])
             if wind:
                 fww, fdg, current_velocity = self.get_wind(swath_data[i])
                 swath_data[i].add_band(array=fww,
-                                       parameters={
-                                           'wkv': 'surface_backwards_doppler_frequency_shift_of_radar_wave_due_to_wind_waves'})
+                                       parameters={'wkv': self.WKV_NAME['dc_wind']})
 
                 swath_data[i].add_band(array=current_velocity,
-                                       parameters={
-                                           'wkv': 'surface_radial_doppler_sea_water_velocity'})
+                                       parameters={'wkv': self.WKV_NAME['radial_velocity']})
             else:
                 fdg, land_corr = swath_data[i].geophysical_doppler_shift()
 
-            swath_data[i].add_band(
-                array=fdg,
-                parameters={
-                    'wkv': 'surface_backwards_doppler_frequency_shift_of_radar_wave_due_to_surface_velocity'
-                })
+            swath_data[i].add_band(array=fdg,
+                                   parameters={'wkv': self.WKV_NAME['dc_velocity']})
 
             # Export data to netcdf
             print('Exporting %s (subswath %d)' % (swath_data[i].fileName, i))
