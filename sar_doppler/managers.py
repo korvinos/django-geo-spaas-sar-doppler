@@ -9,7 +9,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.utils import timezone
 from django.db import models
-from django.contrib.gis.geos import WKTReader
+from django.contrib.gis.geos import WKTReader, Polygon
 
 from geospaas.utils import nansat_filename, media_path, product_path
 from geospaas.vocabularies.models import Parameter
@@ -61,7 +61,7 @@ class DatasetManager(DM):
         n = Doppler(fn, subswath=0)
         gg = WKTReader().read(n.get_border_wkt())
 
-        if ds.geographic_location.geometry.area>gg.area and not reprocess:
+        if ds.geographic_location.geometry.area > gg.area and not reprocess:
             return ds, False
 
         # Update dataset border geometry
@@ -70,7 +70,8 @@ class DatasetManager(DM):
         # though...
 
         swath_data = {}
-
+        # Dictionaries for accumulation of lat/lon for each subswat
+        # <subswat #> : <array>
         lon = {}
         lat = {}
 
@@ -88,6 +89,7 @@ class DatasetManager(DM):
 
         for i in range(self.NUM_SUBSWATS):
             # Read subswaths
+            # TODO: Should we really keep it in memory?
             swath_data[i] = Doppler(fn, subswath=i)
 
             # Should use nansat.domain.get_border - see nansat issue #166
@@ -109,27 +111,24 @@ class DatasetManager(DM):
             lower_border['lon'][i] = lon[i][0, 0:-1:rstep[i]]
             lower_border['lat'][i] = lat[i][0, 0:-1:rstep[i]]
 
-        lons = self.list_of_coordinates(left_border, right_border,
-                                        upper_border, lower_border, 'lon')
+        lons = self.list_of_coordinates(left_border, right_border, upper_border, lower_border, 'lon')
         # apply 180 degree correction to longitude - code copied from
         # get_border_wkt...
 
+        # TODO: This loop returns exactly the same list of lons
         for ilon, llo in enumerate(lons):
-            lons[ilon] = copysign(acos(cos(llo * pi / 180.)) / pi * 180,
-                                  sin(llo * pi / 180.))
+            lons[ilon] = copysign(acos(cos(llo * pi / 180.)) / pi * 180, sin(llo * pi / 180.))
 
-        lats = self.list_of_coordinates(left_border, right_border,
-                                        upper_border, lower_border, 'lat')
+        lats = self.list_of_coordinates(left_border, right_border, upper_border, lower_border, 'lat')
 
-        poly_border = ','.join(str(llo) + ' ' + str(lla) for llo, lla in zip(lons, lats))
-        wkt = 'POLYGON((%s))' % poly_border
-        new_geometry = WKTReader().read(wkt)
+        # Create a polygon form lats and lons
+        new_geometry = Polygon(zip(lons, lats))
 
         # Get geolocation of dataset - this must be updated
         geoloc = ds.geographic_location
         # Check geometry, return if it is the same as the stored one
         if geoloc.geometry == new_geometry and not reprocess:
-            return ds, False
+            return ds, True
 
         if geoloc.geometry != new_geometry:
             # Change the dataset geolocation to cover all subswaths
@@ -142,12 +141,12 @@ class DatasetManager(DM):
         mp = media_path(module, swath_data[i].fileName)
         ppath = product_path(module, swath_data[i].fileName)
 
+        # TODO: Go to the one loop with several methods
         for i in range(self.NUM_SUBSWATS):
-            is_corrupted = False
             # Check if the file is corrupted
             try:
                 inci = swath_data[i]['incidence_angle']
-            #  TODO: What kind of exception ?
+            #  TODO: What kind of exception ? KeyError
             except:
                 not_corrupted = False
                 continue
