@@ -83,6 +83,47 @@ class DatasetManager(DM):
 
         return fww, fdg, current_velocity
 
+    def create_visualization(self, swath_data, swath_num, band, mp, ds):
+        filename = '%s_subswath_%d.png' % (band, swath_num)
+        # check uniqueness of parameter
+        param = Parameter.objects.get(short_name=band)
+        fig = swath_data.write_figure(
+            os.path.join(mp, filename),
+            bands=band,
+            mask_array=swath_data['swathmask'],
+            mask_lut={0: [128, 128, 128]},
+            transparency=[128, 128, 128]
+        )
+
+        # TODO: Is it really possible?
+        if type(fig) == Figure:
+            print 'Created figure of subswath %d, band %s' % (i, band)
+        else:
+            warnings.warn('Figure NOT CREATED')
+
+        # Get DatasetParameter
+        dsp, created = DatasetParameter.objects.get_or_create(dataset=ds,
+                                                              parameter=param)
+
+        # Create Visualization
+        try:
+            geom, created = GeographicLocation.objects.get_or_create(
+                geometry=WKTReader().read(swath_data.get_border_wkt()))
+        except Exception as inst:
+            print(type(inst))
+
+        vv, created = Visualization.objects.get_or_create(
+            uri='file://localhost%s/%s' % (mp, filename),
+            title='%s (swath %d)' % (param.standard_name, swath_num + 1),
+            geographic_location=geom
+        )
+
+        # Create VisualizationParameter
+        vp, created = VisualizationParameter.objects.get_or_create(
+            visualization=vv,
+            ds_parameter=dsp
+        )
+
     def get_or_create(self, uri, reprocess=False, *args, **kwargs):
         # ingest file to db
 
@@ -219,8 +260,7 @@ class DatasetManager(DM):
             
             # Reproject to leaflet projection
             xlon, xlat = swath_data[i].get_corners()
-            d = Domain(NSR(3857),
-                       '-lle %f %f %f %f -tr 1000 1000'
+            d = Domain(NSR(3857), '-lle %f %f %f %f -tr 1000 1000'
                        % (xlon.min(), xlat.min(), xlon.max(), xlat.max()))
 
             swath_data[i].reproject(d, eResampleAlg=1, tps=True)
@@ -249,46 +289,7 @@ class DatasetManager(DM):
             # manager method in order to estimate the range bias after
             # processing multiple files)
             for band in ingest_creates:
-                filename = '%s_subswath_%d.png' % (band, i)
-                # check uniqueness of parameter
-                param = Parameter.objects.get(short_name=band)
-                fig = swath_data[i].write_figure(
-                    os.path.join(mp, filename),
-                    bands=band,
-                    mask_array=swath_data[i]['swathmask'],
-                    mask_lut={0: [128, 128, 128]},
-                    transparency=[128, 128, 128])
-
-                if type(fig) == Figure:
-                    print 'Created figure of subswath %d, band %s' % (i, band)
-                else:
-                    warnings.warn('Figure NOT CREATED')
-
-                # Get DatasetParameter
-                dsp, created = DatasetParameter.objects.get_or_create(dataset=ds,
-                                                                      parameter=param)
-
-                # Create Visualization
-                try:
-                    geom, created = GeographicLocation.objects.get_or_create(
-                        geometry=WKTReader().read(swath_data[i].get_border_wkt()))
-                except Exception as inst:
-                    print(type(inst))
-                    import ipdb
-                    ipdb.set_trace()
-                    raise
-
-                vv, created = Visualization.objects.get_or_create(
-                    uri='file://localhost%s/%s' % (mp, filename),
-                    title='%s (swath %d)' % (param.standard_name, i + 1),
-                    geographic_location=geom
-                )
-
-                # Create VisualizationParameter
-                vp, created = VisualizationParameter.objects.get_or_create(
-                    visualization=vv,
-                    ds_parameter=dsp
-                )
+                self.create_visualization(swath_data[i], i, band, mp, ds)
 
         return ds, not_corrupted
 
