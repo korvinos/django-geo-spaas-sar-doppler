@@ -28,6 +28,7 @@ from sar_doppler.errors import AlreadyExists
 
 class DatasetManager(DM):
 
+    DOMAIN = 'file://localhost'
     NUM_SUBSWATS = 5
     NUM_BORDER_POINTS = 10
     WKV_NAME = {
@@ -212,30 +213,7 @@ class DatasetManager(DM):
                                    parameters={'wkv': self.WKV_NAME['dc_velocity']})
 
             # Export data to netcdf
-            print('Exporting %s (subswath %d)' % (swath_data[i].fileName, i))
-
-            fn = os.path.join(ppath,
-                              os.path.basename(swath_data[i].fileName).split('.')[0]
-                              + 'subswath%d.nc' % i)
-
-            origFile = swath_data[i].fileName
-
-            try:
-                swath_data[i].set_metadata(key='Originating file',
-                                           value=origFile)
-            except Exception as e:
-                # TODO: Should it be here?
-                warnings.warn('%s: BUG IN GDAL(?) - SHOULD BE CHECKED..' % e.message)
-
-            swath_data[i].export(fileName=fn)
-            ncuri = os.path.join('file://localhost', fn)
-            new_uri, created = DatasetURI.objects.get_or_create(uri=ncuri,
-                                                                dataset=ds)
-
-            # Maybe add figures in satellite projection...
-            # filename = 'satproj_fdg_subswath_%d.png'%i
-            # swath_data[i].write_figure(os.path.join(mp, filename),
-            #        bands='fdg', clim=[-60,60], cmapName='jet')
+            self.export(swath_data[i], i, ppath, ds)
 
             #  Add figure to db
             
@@ -313,3 +291,28 @@ class DatasetManager(DM):
                 )
 
         return ds, not_corrupted
+
+    def export(self, swath_data, swath_num, ppath, dataset):
+        """
+        Export data to netcdf
+        :param swath_data:
+        :param swath_num:
+        :param ppath:
+        :param dataset:
+        :return: None
+        """
+        orig_file = swath_data.fileName
+        print('Exporting %s (subswath %d)' % (orig_file, swath_num))
+        # TODO: Correct a file name pateern
+        file_name = os.path.join(ppath, os.path.basename(orig_file).split('.')[0] + 'subswath%d.nc' % swath_num)
+
+        try:
+            swath_data.set_metadata(key='Originating file', value=orig_file)
+        except Exception as e:
+            # TODO: Should it be here?
+            warnings.warn('%s: BUG IN GDAL(?) - SHOULD BE CHECKED..' % e.message)
+
+        swath_data.export(fileName=file_name)
+        ncuri = os.path.join(self.DOMAIN, file_name)
+        new_uri, created = DatasetURI.objects.get_or_create(uri=ncuri, dataset=dataset)
+
