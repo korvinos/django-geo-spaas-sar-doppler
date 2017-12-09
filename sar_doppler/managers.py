@@ -41,6 +41,41 @@ class DatasetManager(DM):
 
         return coord_list
 
+    def find_wind(self, swath):
+        """
+        Find matching NCEP forecast wind field
+        :param swath:
+        :return:
+        """
+        wind = Dataset.objects.filter(
+            source__platform__short_name='NCEP-GFS',
+            time_coverage_start__range=[
+                parse(swath.get_metadata()['time_coverage_start']) - timedelta(hours=3),
+                parse(swath.get_metadata()['time_coverage_start']) + timedelta(hours=3)
+            ]
+        )
+        return wind
+
+    def get_wind(self, swath, wind):
+        # Find band number of surface_backwards_doppler_centroid_frequency_shift_of_radar_wave
+        band_number = swath._get_band_number({'short_name': 'dc'})
+        # Get information about polarization from doppler centroid band
+        polarization = swath.get_metadata(bandID=band_number, key='polarization')
+
+        dates = [w.time_coverage_start for w in wind]
+        # TODO: Come back later (!!!)
+        nearest_date = min(dates, key=lambda d:
+            abs(d - parse(swath.get_metadata()['time_coverage_start']).replace(tzinfo=timezone.utc)))
+
+        wind_uri = nansat_filename(wind[dates.index(nearest_date)].dataseturi_set.all()[0].uri)
+        fww = swath.wind_waves_doppler(wind_uri, polarization)
+        fdg, land_corr = swath.geophysical_doppler_shift(wind=wind_uri)
+        # Estimate current by subtracting wind-waves Doppler
+        theta = swath['incidence_angle'] * np.pi / 180.
+        current_velocity = -np.pi * (fdg - fww) / (112. * np.sin(theta))
+
+        return fww, fdg, current_velocity
+
     def get_or_create(self, uri, reprocess=False, *args, **kwargs):
         # ingest file to db
 
@@ -158,55 +193,17 @@ class DatasetManager(DM):
             })
 
             # Find matching NCEP forecast wind field
-            wind = Dataset.objects.filter(
-                    source__platform__short_name='NCEP-GFS',
-                    time_coverage_start__range=[
-                        parse(swath_data[i].get_metadata()['time_coverage_start'])
-                        - timedelta(hours=3),
-                        parse(swath_data[i].get_metadata()['time_coverage_start'])
-                        + timedelta(hours=3)
-                    ]
-                )
-            band_number = swath_data[i]._get_band_number({
-                'standard_name': 'surface_backwards_doppler_centroid_frequency_shift_of_radar_wave',
-                })
-
-            pol = swath_data[i].get_metadata(bandID=band_number, key='polarization')
-
+            wind = self.find_wind(swath_data[i])
             if wind:
-                dates = [w.time_coverage_start for w in wind]
+                fww, fdg, current_velocity = self.get_wind(swath_data[i])
+                swath_data[i].add_band(array=fww,
+                                       parameters={
+                                           'wkv': 'surface_backwards_doppler_frequency_shift_of_radar_wave_due_to_wind_waves'})
 
-                # TODO: Come back later (!!!)
-                nearest_date = min(dates, key=lambda d:
-                        abs(d-parse(swath_data[i].get_metadata()['time_coverage_start']).replace(tzinfo=timezone.utc)))
-
-                fww = swath_data[i].wind_waves_doppler(
-                        nansat_filename(wind[dates.index(nearest_date)].dataseturi_set.all()[0].uri),
-                        pol
-                    )
-
-                swath_data[i].add_band(array=fww, parameters={
-                    'wkv':
-                    'surface_backwards_doppler_frequency_shift_of_radar_wave_due_to_wind_waves'
-                })
-
-                fdg, land_corr = swath_data[i].geophysical_doppler_shift(
-                    wind=nansat_filename(wind[dates.index(nearest_date)].dataseturi_set.all()[0].uri)
-                )
-
-                # Estimate current by subtracting wind-waves Doppler
-                theta = swath_data[i]['incidence_angle'] * np.pi / 180.
-                vcurrent = -np.pi * (fdg - fww) / (112. * np.sin(theta))
-
-                # Smooth...
-                # vcurrent = median_filter(vcurrent, size=(3,3))
-                swath_data[i].add_band(
-                    array=vcurrent,
-                    parameters={
-                        'wkv': 'surface_radial_doppler_sea_water_velocity'
-                    })
+                swath_data[i].add_band(array=current_velocity,
+                                       parameters={
+                                           'wkv': 'surface_radial_doppler_sea_water_velocity'})
             else:
-                fww = None
                 fdg, land_corr = swath_data[i].geophysical_doppler_shift()
 
             swath_data[i].add_band(
