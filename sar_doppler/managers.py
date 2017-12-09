@@ -28,6 +28,19 @@ from sar_doppler.errors import AlreadyExists
 
 class DatasetManager(DM):
 
+    NUM_SUBSWATS = 5
+    NUM_BORDER_POINTS = 10
+
+    def list_of_coordinates(self, left, right, upper, lower, axis):
+        coord_list = np.concatenate(
+            (left[axis][0], upper[axis][0], upper[axis][1], upper[axis][2],
+             upper[axis][3], upper[axis][4], np.flipud(right[axis][4]),
+             np.flipud(lower[axis][4]), np.flipud(lower[axis][3]),
+             np.flipud(lower[axis][2]), np.flipud(lower[axis][1]),
+             np.flipud(lower[axis][0])))
+
+        return coord_list
+
     def get_or_create(self, uri, reprocess=False, *args, **kwargs):
         # ingest file to db
 
@@ -44,6 +57,7 @@ class DatasetManager(DM):
         ds.save()
 
         fn = nansat_filename(uri)
+        # TODO: It will be ever swath #1 so should we specify?
         n = Doppler(fn, subswath=0)
         gg = WKTReader().read(n.get_border_wkt())
 
@@ -55,53 +69,48 @@ class DatasetManager(DM):
         # consuming but apparently the only way to do it. Could be checked
         # though...
 
-        n_subswaths = 5
         swath_data = {}
+
         lon = {}
         lat = {}
+
         astep = {}
         rstep = {}
-        az_left_lon = {}
-        ra_upper_lon = {}
-        az_right_lon = {}
-        ra_lower_lon = {}
-        az_left_lat = {}
-        ra_upper_lat = {}
-        az_right_lat = {}
-        ra_lower_lat = {}
-        num_border_points = 10
-        border = 'POLYGON(('
 
-        for i in range(n_subswaths):
-            # Read subswaths 
+        # Dictionaries for accumulation of image border coordinates
+        left_border = {'lat': {}, 'lon': {}}    # Azimuthal direction
+        right_border = {'lat': {}, 'lon': {}}   # Azimuthal direction
+        upper_border = {'lat': {}, 'lon': {}}   # Range direction
+        lower_border = {'lat': {}, 'lon': {}}   # Range direction
+
+        # Flag for detection of corruption in img
+        not_corrupted = True
+
+        for i in range(self.NUM_SUBSWATS):
+            # Read subswaths
             swath_data[i] = Doppler(fn, subswath=i)
 
             # Should use nansat.domain.get_border - see nansat issue #166
             # (https://github.com/nansencenter/nansat/issues/166)
             lon[i], lat[i] = swath_data[i].get_geolocation_grids()
 
-            astep[i] = max(1, (lon[i].shape[0] / 2 * 2 - 1) / num_border_points)
-            rstep[i] = max(1, (lon[i].shape[1] / 2 * 2 - 1) / num_border_points)
+            astep[i] = max(1, (lon[i].shape[0] / 2 * 2 - 1) / self.NUM_BORDER_POINTS)
+            rstep[i] = max(1, (lon[i].shape[1] / 2 * 2 - 1) / self.NUM_BORDER_POINTS)
 
-            az_left_lon[i] = lon[i][0:-1:astep[i], 0]
-            az_left_lat[i] = lat[i][0:-1:astep[i], 0]
+            left_border['lon'][i] = lon[i][0:-1:astep[i], 0]
+            left_border['lat'][i] = lat[i][0:-1:astep[i], 0]
 
-            az_right_lon[i] = lon[i][0:-1:astep[i], -1]
-            az_right_lat[i] = lat[i][0:-1:astep[i], -1]
+            right_border['lon'][i] = lon[i][0:-1:astep[i], -1]
+            right_border['lat'][i] = lat[i][0:-1:astep[i], -1]
 
-            ra_upper_lon[i] = lon[i][-1, 0:-1:rstep[i]]
-            ra_upper_lat[i] = lat[i][-1, 0:-1:rstep[i]]
+            upper_border['lon'][i] = lon[i][-1, 0:-1:rstep[i]]
+            upper_border['lat'][i] = lat[i][-1, 0:-1:rstep[i]]
 
-            ra_lower_lon[i] = lon[i][0, 0:-1:rstep[i]]
-            ra_lower_lat[i] = lat[i][0, 0:-1:rstep[i]]
+            lower_border['lon'][i] = lon[i][0, 0:-1:rstep[i]]
+            lower_border['lat'][i] = lat[i][0, 0:-1:rstep[i]]
 
-        lons = np.concatenate((az_left_lon[0],  ra_upper_lon[0],
-                               ra_upper_lon[1], ra_upper_lon[2],
-                               ra_upper_lon[3], ra_upper_lon[4],
-                               np.flipud(az_right_lon[4]), np.flipud(ra_lower_lon[4]),
-                               np.flipud(ra_lower_lon[3]), np.flipud(ra_lower_lon[2]),
-                               np.flipud(ra_lower_lon[1]), np.flipud(ra_lower_lon[0])))
-
+        lons = self.list_of_coordinates(left_border, right_border,
+                                        upper_border, lower_border, 'lon')
         # apply 180 degree correction to longitude - code copied from
         # get_border_wkt...
 
@@ -109,12 +118,8 @@ class DatasetManager(DM):
             lons[ilon] = copysign(acos(cos(llo * pi / 180.)) / pi * 180,
                                   sin(llo * pi / 180.))
 
-        lats = np.concatenate((az_left_lat[0], ra_upper_lat[0],
-                               ra_upper_lat[1], ra_upper_lat[2],
-                               ra_upper_lat[3], ra_upper_lat[4],
-                               np.flipud(az_right_lat[4]), np.flipud(ra_lower_lat[4]),
-                               np.flipud(ra_lower_lat[3]), np.flipud(ra_lower_lat[2]),
-                               np.flipud(ra_lower_lat[1]), np.flipud(ra_lower_lat[0])))
+        lats = self.list_of_coordinates(left_border, right_border,
+                                        upper_border, lower_border, 'lat')
 
         poly_border = ','.join(str(llo) + ' ' + str(lla) for llo, lla in zip(lons, lats))
         wkt = 'POLYGON((%s))' % poly_border
@@ -137,14 +142,14 @@ class DatasetManager(DM):
         mp = media_path(module, swath_data[i].fileName)
         ppath = product_path(module, swath_data[i].fileName)
 
-        for i in range(n_subswaths):
+        for i in range(self.NUM_SUBSWATS):
             is_corrupted = False
             # Check if the file is corrupted
             try:
                 inci = swath_data[i]['incidence_angle']
             #  TODO: What kind of exception ?
             except:
-                is_corrupted = True
+                not_corrupted = False
                 continue
 
             # Add Doppler anomaly
@@ -253,7 +258,7 @@ class DatasetManager(DM):
 
             # TODO: What kind of exception?
             except:
-                is_corrupted = True
+                not_corrupted = False
                 warnings.warn('Could not read incidence angles - reprojection failed')
                 continue
 
@@ -312,4 +317,4 @@ class DatasetManager(DM):
                     ds_parameter=dsp
                 )
 
-        return ds, not is_corrupted
+        return ds, not_corrupted
