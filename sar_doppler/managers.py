@@ -49,6 +49,13 @@ class DatasetManager(DM):
         return coord_list
 
     def check_corruption(self, swath, message):
+        """
+        Function which gets <incidence_angle> band from the input image
+        and if it possible, then file was not corrupted
+        :param swath: sardoppler.sardoppler.Doppler object, Data from one swath
+        :param message: str, Additional message for warning
+        :return: bool, True if the <swath_data> was not corrupted and False if was
+        """
         try:
             inci = swath['incidence_angle']
             not_corrupted = True
@@ -60,31 +67,34 @@ class DatasetManager(DM):
         return not_corrupted
 
     def generate_product(self, swath_data, swath_num, ppath, mp, ds):
+        """
+        :param swath_data: sardoppler.sardoppler.Doppler object, Data from one swath
+        :param swath_num: int, number of the swath
+        :param ppath:
+        :param mp:
+        :param ds:
+        :return: bool, True if the <swath_data> was not corrupted and False if was
+        """
         not_corrupted = self.check_corruption(swath_data, 'first')
         if not not_corrupted:
             return False
-
         # Add Doppler anomaly
         swath_data.add_band(array=swath_data.anomaly(), parameters={'wkv': self.WKV_NAME['dc_anomaly']})
-
         # Find matching NCEP forecast wind field
-        wind = self.find_wind(swath_data)
-        if wind:
-            fww, fdg, current_velocity = self.get_wind(swath_data)
-            swath_data.add_band(array=fww, parameters={'wkv': self.WKV_NAME['dc_wind']})
-            swath_data.add_band(array=current_velocity, parameters={'wkv': self.WKV_NAME['radial_velocity']})
-        else:
-            fdg, land_corr = swath_data.geophysical_doppler_shift()
-
-        swath_data.add_band(array=fdg, parameters={'wkv': self.WKV_NAME['dc_velocity']})
-
+        swath_data, wind = self.get_wind(swath_data)
         # Export data to netcdf
         self.export(swath_data, swath_num, ppath, ds)
-
         #  Add figure to db
+        not_corrupted = self.figure2db(swath_data, swath_num, wind, mp, ds)
+        if not not_corrupted:
+            return False
 
+        return True
+
+    def figure2db(self, swath_data, swath_num, wind, mp, ds):
         # Reproject to leaflet projection
         xlon, xlat = swath_data.get_corners()
+        # Create a new domain based on <swath> lat/lon borders
         d = Domain(NSR(3857), '-lle %f %f %f %f -tr 1000 1000'
                    % (xlon.min(), xlat.min(), xlon.max(), xlat.max()))
 
@@ -112,6 +122,8 @@ class DatasetManager(DM):
         for band in ingest_creates:
             self.create_visualization(swath_data, swath_num, band, mp, ds)
 
+        return True
+
     def find_wind(self, swath):
         """
         Find matching NCEP forecast wind field
@@ -127,7 +139,7 @@ class DatasetManager(DM):
         )
         return wind
 
-    def get_wind(self, swath, wind):
+    def doppler_wind(self, swath, wind):
         # Find band number of surface_backwards_doppler_centroid_frequency_shift_of_radar_wave
         band_number = swath._get_band_number({'short_name': 'dc'})
         # Get information about polarization from doppler centroid band
@@ -146,6 +158,19 @@ class DatasetManager(DM):
         current_velocity = -np.pi * (fdg - fww) / (112. * np.sin(theta))
 
         return fww, fdg, current_velocity
+
+    def get_wind(self, swath_data):
+        wind = self.find_wind(swath_data)
+        if wind:
+            fww, fdg, current_velocity = self.doppler_wind(swath_data, wind)
+            swath_data.add_band(array=fww, parameters={'wkv': self.WKV_NAME['dc_wind']})
+            swath_data.add_band(array=current_velocity, parameters={'wkv': self.WKV_NAME['radial_velocity']})
+        else:
+            fdg, land_corr = swath_data.geophysical_doppler_shift()
+
+        swath_data.add_band(array=fdg, parameters={'wkv': self.WKV_NAME['dc_velocity']})
+
+        return swath_data, wind
 
     def create_visualization(self, swath_data, swath_num, band, mp, ds):
         filename = '%s_subswath_%d.png' % (band, swath_num)
@@ -236,7 +261,6 @@ class DatasetManager(DM):
 
         for i in range(self.NUM_SUBSWATS):
             # Read subswaths
-            # TODO: Should we really keep it in memory?
             swath_data[i] = Doppler(fn, subswath=i)
 
             # Should use nansat.domain.get_border - see nansat issue #166
