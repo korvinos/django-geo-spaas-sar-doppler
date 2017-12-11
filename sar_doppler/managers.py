@@ -48,6 +48,17 @@ class DatasetManager(DM):
 
         return coord_list
 
+    def check_corruption(self, swath, message):
+        try:
+            inci = swath['incidence_angle']
+            not_corrupted = True
+        # TODO: What kind of exception?
+        except:
+            not_corrupted = False
+            warnings.warn(message)
+
+        return not_corrupted
+
     def find_wind(self, swath):
         """
         Find matching NCEP forecast wind field
@@ -95,9 +106,9 @@ class DatasetManager(DM):
             transparency=[128, 128, 128]
         )
 
-        # TODO: Is it really possible?
         if type(fig) == Figure:
-            print 'Created figure of subswath %d, band %s' % (i, band)
+            print 'Created figure of subswath %d, band %s' % (swath_num, band)
+            # TODO: Is it really possible?
         else:
             warnings.warn('Figure NOT CREATED')
 
@@ -127,12 +138,12 @@ class DatasetManager(DM):
     def get_or_create(self, uri, reprocess=False, *args, **kwargs):
         # ingest file to db
 
-        if DatasetURI.objects.filter(uri=uri):
+        if DatasetURI.objects.filter(uri=uri) and not reprocess:
             raise AlreadyExists
 
         ds, created = super(DatasetManager, self).get_or_create(uri, *args, **kwargs)
 
-        if not type(ds) == Dataset:
+        if type(ds) is not Dataset:
             return ds, False
 
         # set Dataset entry_title
@@ -221,17 +232,14 @@ class DatasetManager(DM):
         # Create data products
         mm = self.__module__.split('.')
         module = '%s.%s' % (mm[0], mm[1])
+        # local uri path for visualizations
         mp = media_path(module, swath_data[i].fileName)
         ppath = product_path(module, swath_data[i].fileName)
 
         # TODO: Go to the one loop with several methods
         for i in range(self.NUM_SUBSWATS):
-            # Check if the file is corrupted
-            try:
-                inci = swath_data[i]['incidence_angle']
-            #  TODO: What kind of exception ? KeyError
-            except:
-                not_corrupted = False
+            not_corrupted = self.check_corruption(swath_data, 'first')
+            if not not_corrupted:
                 continue
 
             # Add Doppler anomaly
@@ -266,13 +274,9 @@ class DatasetManager(DM):
             swath_data[i].reproject(d, eResampleAlg=1, tps=True)
 
             # Check if the reprojection failed
-            try:
-                inci = swath_data[i]['incidence_angle']
-
-            # TODO: What kind of exception?
-            except:
-                not_corrupted = False
-                warnings.warn('Could not read incidence angles - reprojection failed')
+            not_corrupted = self.check_corruption(swath_data,
+                                                  'Could not read incidence angles - reprojection failed')
+            if not not_corrupted:
                 continue
 
             # Visualizations of the following bands (short_names) are created
