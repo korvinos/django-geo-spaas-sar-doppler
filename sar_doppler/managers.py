@@ -213,8 +213,36 @@ class DatasetManager(DM):
             ds_parameter=dsp
         )
 
+    def update_borders(self, swath_data, i, step, border):
+        """
+        Add information about borders coordinates and steps size from the swath
+        :param swath_data: sardoppler.sardoppler.Doppler object, Data from one swath
+        :param i: int, number of swath
+        :param step: dict, Dictionary for accumulation of maximal steps in azimuthal and range direction
+        :param border: dict, Dictionary for accumulation of lat/con coordinates for each border;
+        left and right are azimuthal borders; upper and bottom are range borders
+        :return: dict, dict, <step> and <border> dictionaries updated with values from the input swath
+        """
+        lon, lat = swath_data.get_geolocation_grids()
+
+        step['azimuth'][i] = max(1, (lon.shape[0] / 2 * 2 - 1) / self.NUM_BORDER_POINTS)
+        step['range'][i] = max(1, (lon.shape[1] / 2 * 2 - 1) / self.NUM_BORDER_POINTS)
+
+        border['left']['lon'][i] = lon[0:-1:step['azimuth'][i], 0]
+        border['left']['lat'][i] = lat[0:-1:step['azimuth'][i], 0]
+
+        border['right']['lon'][i] = lon[0:-1:step['azimuth'][i], -1]
+        border['left']['lat'][i] = lat[0:-1:step['azimuth'][i], -1]
+
+        border['upper']['lon'][i] = lon[-1, 0:-1:step['range'][i]]
+        border['upper']['lat'][i] = lat[-1, 0:-1:step['range'][i]]
+
+        border['lower']['lon'][i] = lon[0, 0:-1:step['range'][i]]
+        border['lower']['lat'][i] = lat[0, 0:-1:step['range'][i]]
+
+        return step, border
+
     def get_or_create(self, uri, reprocess=False, *args, **kwargs):
-        # ingest file to db
 
         if DatasetURI.objects.filter(uri=uri) and not reprocess:
             raise AlreadyExists
@@ -241,48 +269,33 @@ class DatasetManager(DM):
         # consuming but apparently the only way to do it. Could be checked
         # though...
 
+        # Create dictionary for accumulation of data from each swath
         swath_data = {}
-        # Dictionaries for accumulation of lat/lon for each subswat
-        # <subswat #> : <array>
-        lon = {}
-        lat = {}
 
-        astep = {}
-        rstep = {}
-
+        step = {
+            'azimuth': {},
+            'range': {}
+        }
         # Dictionaries for accumulation of image border coordinates
-        left_border = {'lat': {}, 'lon': {}}    # Azimuthal direction
-        right_border = {'lat': {}, 'lon': {}}   # Azimuthal direction
-        upper_border = {'lat': {}, 'lon': {}}   # Range direction
-        lower_border = {'lat': {}, 'lon': {}}   # Range direction
-
+        border = {
+            'left': {'lat': {}, 'lon': {}},     # Azimuthal direction
+            'right': {'lat': {}, 'lon': {}},    # Azimuthal direction
+            'upper': {'lat': {}, 'lon': {}},    # Range direction
+            'lower': {'lat': {}, 'lon': {}}     # Range direction
+        }
         # Flag for detection of corruption in img
         not_corrupted = True
 
-        for i in range(self.NUM_SUBSWATS):
+        for i in xrange(self.NUM_SUBSWATS):
             # Read subswaths
             swath_data[i] = Doppler(fn, subswath=i)
 
             # Should use nansat.domain.get_border - see nansat issue #166
             # (https://github.com/nansencenter/nansat/issues/166)
-            lon[i], lat[i] = swath_data[i].get_geolocation_grids()
+            steps, borders = self.update_borders(swath_data[i], i, step, border)
 
-            astep[i] = max(1, (lon[i].shape[0] / 2 * 2 - 1) / self.NUM_BORDER_POINTS)
-            rstep[i] = max(1, (lon[i].shape[1] / 2 * 2 - 1) / self.NUM_BORDER_POINTS)
-
-            left_border['lon'][i] = lon[i][0:-1:astep[i], 0]
-            left_border['lat'][i] = lat[i][0:-1:astep[i], 0]
-
-            right_border['lon'][i] = lon[i][0:-1:astep[i], -1]
-            right_border['lat'][i] = lat[i][0:-1:astep[i], -1]
-
-            upper_border['lon'][i] = lon[i][-1, 0:-1:rstep[i]]
-            upper_border['lat'][i] = lat[i][-1, 0:-1:rstep[i]]
-
-            lower_border['lon'][i] = lon[i][0, 0:-1:rstep[i]]
-            lower_border['lat'][i] = lat[i][0, 0:-1:rstep[i]]
-
-        lons = self.list_of_coordinates(left_border, right_border, upper_border, lower_border, 'lon')
+        lons = self.list_of_coordinates(border['left'], border['right'],
+                                        border['upper'], border['lower'], 'lon')
         # apply 180 degree correction to longitude - code copied from
         # get_border_wkt...
 
@@ -290,7 +303,8 @@ class DatasetManager(DM):
         for ilon, llo in enumerate(lons):
             lons[ilon] = copysign(acos(cos(llo * pi / 180.)) / pi * 180, sin(llo * pi / 180.))
 
-        lats = self.list_of_coordinates(left_border, right_border, upper_border, lower_border, 'lat')
+        lats = self.list_of_coordinates(border['left'], border['right'],
+                                        border['upper'], border['lower'], 'lat')
 
         # Create a polygon form lats and lons
         new_geometry = Polygon(zip(lons, lats))
