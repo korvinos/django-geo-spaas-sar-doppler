@@ -59,6 +59,59 @@ class DatasetManager(DM):
 
         return not_corrupted
 
+    def generate_product(self, swath_data, swath_num, ppath, mp, ds):
+        not_corrupted = self.check_corruption(swath_data, 'first')
+        if not not_corrupted:
+            return False
+
+        # Add Doppler anomaly
+        swath_data.add_band(array=swath_data.anomaly(), parameters={'wkv': self.WKV_NAME['dc_anomaly']})
+
+        # Find matching NCEP forecast wind field
+        wind = self.find_wind(swath_data)
+        if wind:
+            fww, fdg, current_velocity = self.get_wind(swath_data)
+            swath_data.add_band(array=fww, parameters={'wkv': self.WKV_NAME['dc_wind']})
+            swath_data.add_band(array=current_velocity, parameters={'wkv': self.WKV_NAME['radial_velocity']})
+        else:
+            fdg, land_corr = swath_data.geophysical_doppler_shift()
+
+        swath_data.add_band(array=fdg, parameters={'wkv': self.WKV_NAME['dc_velocity']})
+
+        # Export data to netcdf
+        self.export(swath_data, swath_num, ppath, ds)
+
+        #  Add figure to db
+
+        # Reproject to leaflet projection
+        xlon, xlat = swath_data.get_corners()
+        d = Domain(NSR(3857), '-lle %f %f %f %f -tr 1000 1000'
+                   % (xlon.min(), xlat.min(), xlon.max(), xlat.max()))
+
+        swath_data.reproject(d, eResampleAlg=1, tps=True)
+
+        # Check if the reprojection failed
+        not_corrupted = self.check_corruption(swath_data,
+                                              'Could not read incidence angles - reprojection failed')
+        if not not_corrupted:
+            return False
+
+        # Visualizations of the following bands (short_names) are created
+        # when ingesting data:
+        ingest_creates = ['valid_doppler',
+                          'valid_land_doppler',
+                          'valid_sea_doppler',
+                          'dca',
+                          'fdg']
+        if wind:
+            ingest_creates.extend(['fww', 'Ur'])
+
+        # (the geophysical doppler shift must later be added in a separate
+        # manager method in order to estimate the range bias after
+        # processing multiple files)
+        for band in ingest_creates:
+            self.create_visualization(swath_data, swath_num, band, mp, ds)
+
     def find_wind(self, swath):
         """
         Find matching NCEP forecast wind field
@@ -220,6 +273,7 @@ class DatasetManager(DM):
 
         # Get geolocation of dataset - this must be updated
         geoloc = ds.geographic_location
+
         # Check geometry, return if it is the same as the stored one
         if geoloc.geometry == new_geometry and not reprocess:
             return ds, True
@@ -236,64 +290,8 @@ class DatasetManager(DM):
         mp = media_path(module, swath_data[i].fileName)
         ppath = product_path(module, swath_data[i].fileName)
 
-        # TODO: Go to the one loop with several methods
-        for i in range(self.NUM_SUBSWATS):
-            not_corrupted = self.check_corruption(swath_data, 'first')
-            if not not_corrupted:
-                continue
-
-            # Add Doppler anomaly
-            swath_data[i].add_band(array=swath_data[i].anomaly(),
-                                   parameters={'wkv': self.WKV_NAME['dc_anomaly']})
-
-            # Find matching NCEP forecast wind field
-            wind = self.find_wind(swath_data[i])
-            if wind:
-                fww, fdg, current_velocity = self.get_wind(swath_data[i])
-                swath_data[i].add_band(array=fww,
-                                       parameters={'wkv': self.WKV_NAME['dc_wind']})
-
-                swath_data[i].add_band(array=current_velocity,
-                                       parameters={'wkv': self.WKV_NAME['radial_velocity']})
-            else:
-                fdg, land_corr = swath_data[i].geophysical_doppler_shift()
-
-            swath_data[i].add_band(array=fdg,
-                                   parameters={'wkv': self.WKV_NAME['dc_velocity']})
-
-            # Export data to netcdf
-            self.export(swath_data[i], i, ppath, ds)
-
-            #  Add figure to db
-            
-            # Reproject to leaflet projection
-            xlon, xlat = swath_data[i].get_corners()
-            d = Domain(NSR(3857), '-lle %f %f %f %f -tr 1000 1000'
-                       % (xlon.min(), xlat.min(), xlon.max(), xlat.max()))
-
-            swath_data[i].reproject(d, eResampleAlg=1, tps=True)
-
-            # Check if the reprojection failed
-            not_corrupted = self.check_corruption(swath_data,
-                                                  'Could not read incidence angles - reprojection failed')
-            if not not_corrupted:
-                continue
-
-            # Visualizations of the following bands (short_names) are created
-            # when ingesting data:
-            ingest_creates = ['valid_doppler',
-                              'valid_land_doppler',
-                              'valid_sea_doppler',
-                              'dca',
-                              'fdg']
-            if wind:
-                ingest_creates.extend(['fww', 'Ur'])
-
-            # (the geophysical doppler shift must later be added in a separate
-            # manager method in order to estimate the range bias after
-            # processing multiple files)
-            for band in ingest_creates:
-                self.create_visualization(swath_data[i], i, band, mp, ds)
+        for i in xrange(self.NUM_SUBSWATS):
+            self.generate_product(swath_data[i], i, ppath, mp, ds)
 
         return ds, not_corrupted
 
@@ -320,4 +318,3 @@ class DatasetManager(DM):
         swath_data.export(fileName=file_name)
         ncuri = os.path.join(self.DOMAIN, file_name)
         new_uri, created = DatasetURI.objects.get_or_create(uri=ncuri, dataset=dataset)
-
